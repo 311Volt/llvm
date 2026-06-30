@@ -23,12 +23,31 @@ add_ur_adapter(${TARGET_NAME}
     ${CMAKE_CURRENT_SOURCE_DIR}/usm.cpp
 )
 
+# liboffload installs libLLVMOffload.so either flat in lib/ or, when LLVM uses
+# per-target runtime directories, under lib/<triple>/. Resolve the real path:
+# prefer an existing file (glob covers either layout, e.g. a prebuilt install),
+# otherwise fall back to the triple subdir so in-tree builds that haven't built
+# the library yet still point at the right place.
+macro(ur_offload_resolve_lib out_var)
+    file(GLOB _ur_offload_lib_candidates
+        "${UR_OFFLOAD_INSTALL_DIR}/lib/libLLVMOffload.so"
+        "${UR_OFFLOAD_INSTALL_DIR}/lib/*/libLLVMOffload.so")
+    if(_ur_offload_lib_candidates)
+        list(GET _ur_offload_lib_candidates 0 ${out_var})
+    elseif(LLVM_DEFAULT_TARGET_TRIPLE)
+        set(${out_var} "${UR_OFFLOAD_INSTALL_DIR}/lib/${LLVM_DEFAULT_TARGET_TRIPLE}/libLLVMOffload.so")
+    else()
+        set(${out_var} "${UR_OFFLOAD_INSTALL_DIR}/lib/libLLVMOffload.so")
+    endif()
+    unset(_ur_offload_lib_candidates)
+endmacro()
+
 set(UR_OFFLOAD_INSTALL_DIR "" CACHE PATH "Path to the directory containing libomptarget.so etc")
 set(UR_OFFLOAD_INCLUDE_DIR "" CACHE PATH "Path to the directory containing LLVM headers")
 if (UR_OFFLOAD_INSTALL_DIR STREQUAL "" OR UR_OFFLOAD_INCLUDE_DIR STREQUAL "")
     include(ExternalProject)
     set(LLVM_PROJECT_SOURCE_DIR  ${CMAKE_BINARY_DIR}/llvm-src-offload)
-    set(LLVM_PROJECT_TAG  32beea0605f37ea7a6429375d41b19ee78ddfe7d)
+    set(LLVM_PROJECT_TAG  cb4d3c00bb6c5c361bef316bb90ef9d1a50aab99)
     set(OPENMP_INSTALL_DIR ${CMAKE_BINARY_DIR}/openmp-install)
     set(UR_OFFLOAD_INSTALL_DIR ${CMAKE_BINARY_DIR}/offload-install)
     set(UR_OFFLOAD_INCLUDE_DIR ${UR_OFFLOAD_INSTALL_DIR}/include)
@@ -78,6 +97,8 @@ if (UR_OFFLOAD_INSTALL_DIR STREQUAL "" OR UR_OFFLOAD_INCLUDE_DIR STREQUAL "")
         DOWNLOAD_COMMAND ""
     )
 
+    ur_offload_resolve_lib(UR_OFFLOAD_LIB)
+
     # Build liboffload runtime from the same source tree
     ExternalProject_Add(offload_ext
         DEPENDS openmp_ext
@@ -97,7 +118,7 @@ if (UR_OFFLOAD_INSTALL_DIR STREQUAL "" OR UR_OFFLOAD_INCLUDE_DIR STREQUAL "")
         INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install
         UPDATE_COMMAND ""
         DOWNLOAD_COMMAND ""
-        BUILD_BYPRODUCTS "${UR_OFFLOAD_INSTALL_DIR}/lib/libLLVMOffload.so"
+        BUILD_BYPRODUCTS "${UR_OFFLOAD_LIB}"
     )
     add_dependencies(${TARGET_NAME} offload_ext)
     install(DIRECTORY "${UR_OFFLOAD_INSTALL_DIR}/"
@@ -132,12 +153,14 @@ if (CUDA_cuda_driver_LIBRARY)
     target_compile_definitions(${TARGET_NAME} PRIVATE UR_CUDA_ENABLED)
 endif()
 
+ur_offload_resolve_lib(UR_OFFLOAD_LIB)
+
 target_link_libraries(${TARGET_NAME} PRIVATE
     ${PROJECT_NAME}::headers
     ${PROJECT_NAME}::common
     ${PROJECT_NAME}::umf
     ur_common
-    ${UR_OFFLOAD_INSTALL_DIR}/lib/libLLVMOffload.so
+    ${UR_OFFLOAD_LIB}
     ${ADDITIONAL_LINK_LIBS}
 )
 

@@ -38,14 +38,35 @@ ol_result_t waitOnEvents(ol_queue_handle_t Queue,
 }
 
 ol_result_t makeEvent(ur_command_t Type, ol_queue_handle_t OlQueue,
-                      ur_queue_handle_t UrQueue, ur_event_handle_t *UrEvent) {
+                      ur_queue_handle_t UrQueue, ur_event_handle_t *UrEvent,
+                      ol_event_handle_t StartEvent = nullptr) {
   if (UrEvent) {
     auto *Event = new ur_event_handle_t_(Type, UrQueue);
-    if (auto Res = olCreateEvent(OlQueue, &Event->OffloadEvent)) {
+    bool Profiling = UrQueue->Flags & UR_QUEUE_FLAG_PROFILING_ENABLE;
+    ol_event_flags_t Flags =
+        Profiling ? OL_EVENT_FLAGS_ENABLE_PROFILING : OL_EVENT_FLAGS_NONE;
+    if (auto Res = olCreateEvent(OlQueue, Flags, &Event->OffloadEvent)) {
       delete Event;
       return Res;
     };
+    Event->OffloadStartEvent = StartEvent;
+    // Profiling is only queryable when we also captured a command-start marker.
+    Event->HasProfiling = StartEvent != nullptr;
     *UrEvent = Event;
+  }
+  return OL_SUCCESS;
+}
+
+// Create a profiling command-start marker on `OlQueue` when the queue has
+// profiling enabled and the caller wants an output event. Enqueue this before
+// the command's work so it timestamps the command's start. Returns nullptr in
+// `OutStart` when no marker is needed.
+ol_result_t makeStartEvent(ur_queue_handle_t UrQueue, ol_queue_handle_t OlQueue,
+                           ur_event_handle_t *UrEvent,
+                           ol_event_handle_t *OutStart) {
+  *OutStart = nullptr;
+  if (UrEvent && (UrQueue->Flags & UR_QUEUE_FLAG_PROFILING_ENABLE)) {
+    return olCreateEvent(OlQueue, OL_EVENT_FLAGS_ENABLE_PROFILING, OutStart);
   }
   return OL_SUCCESS;
 }
@@ -84,7 +105,8 @@ ur_result_t doWait(ur_queue_handle_t hQueue, uint32_t numEventsInWaitList,
       if (Q == TargetQueue) {
         continue;
       }
-      OL_RETURN_ON_ERR(olCreateEvent(Q, &OffloadHandles.emplace_back()));
+      OL_RETURN_ON_ERR(olCreateEvent(Q, OL_EVENT_FLAGS_NONE,
+                                     &OffloadHandles.emplace_back()));
     }
     OL_RETURN_ON_ERR(olWaitEvents(TargetQueue, OffloadHandles.data(),
                                   OffloadHandles.size()));
@@ -163,6 +185,9 @@ static ur_result_t urEnqueueKernelLaunch(
   OL_RETURN_ON_ERR(hQueue->nextQueue(Queue));
   OL_RETURN_ON_ERR(waitOnEvents(Queue, phEventWaitList, numEventsInWaitList));
 
+  ol_event_handle_t StartEvent;
+  OL_RETURN_ON_ERR(makeStartEvent(hQueue, Queue, phEvent, &StartEvent));
+
   (void)pGlobalWorkOffset;
 
   size_t GlobalSize[3] = {1, 1, 1};
@@ -200,11 +225,15 @@ static ur_result_t urEnqueueKernelLaunch(
   LaunchArgs.GroupSize.z = GroupSize[2];
   LaunchArgs.DynSharedMemory = 0;
 
+  auto &Ptrs = hKernel->Args.getPointers();
+  auto &Sizes = hKernel->Args.getParamSizes();
   OL_RETURN_ON_ERR(olLaunchKernel(
-      Queue, hQueue->OffloadDevice, hKernel->OffloadKernel,
-      hKernel->Args.getStorage(), hKernel->Args.getStorageSize(), &LaunchArgs));
+      Queue, hQueue->OffloadDevice, hKernel->OffloadKernel, &LaunchArgs,
+      /*Properties=*/nullptr, Ptrs.size(),
+      const_cast<void **>(Ptrs.data()), Sizes.data()));
 
-  OL_RETURN_ON_ERR(makeEvent(UR_COMMAND_KERNEL_LAUNCH, Queue, hQueue, phEvent));
+  OL_RETURN_ON_ERR(
+      makeEvent(UR_COMMAND_KERNEL_LAUNCH, Queue, hQueue, phEvent, StartEvent));
   return UR_RESULT_SUCCESS;
 }
 
@@ -216,9 +245,13 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMFill(
   OL_RETURN_ON_ERR(hQueue->nextQueue(Queue));
   OL_RETURN_ON_ERR(waitOnEvents(Queue, phEventWaitList, numEventsInWaitList));
 
+  ol_event_handle_t StartEvent;
+  OL_RETURN_ON_ERR(makeStartEvent(hQueue, Queue, phEvent, &StartEvent));
+
   OL_RETURN_ON_ERR(
       olMemFill(Queue, pMem, patternSize, const_cast<void *>(pPattern), size));
-  OL_RETURN_ON_ERR(makeEvent(UR_COMMAND_USM_FILL, Queue, hQueue, phEvent));
+  OL_RETURN_ON_ERR(
+      makeEvent(UR_COMMAND_USM_FILL, Queue, hQueue, phEvent, StartEvent));
 
   return UR_RESULT_SUCCESS;
 }
@@ -257,16 +290,12 @@ ur_result_t doMemcpy(ur_command_t Command, ur_queue_handle_t hQueue,
     return UR_RESULT_SUCCESS;
   }
 
+  ol_event_handle_t StartEvent;
+  OL_RETURN_ON_ERR(makeStartEvent(hQueue, Queue, phEvent, &StartEvent));
+
   OL_RETURN_ON_ERR(
       olMemcpy(Queue, DestPtr, DestDevice, SrcPtr, SrcDevice, size));
-  if (phEvent) {
-    auto *Event = new ur_event_handle_t_(Command, hQueue);
-    if (auto Res = olCreateEvent(Queue, &Event->OffloadEvent)) {
-      delete Event;
-      return offloadResultToUR(Res);
-    };
-    *phEvent = Event;
-  }
+  OL_RETURN_ON_ERR(makeEvent(Command, Queue, hQueue, phEvent, StartEvent));
 
   return UR_RESULT_SUCCESS;
 }
@@ -321,12 +350,16 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueMemBufferFill(
   OL_RETURN_ON_ERR(hQueue->nextQueue(Queue));
   OL_RETURN_ON_ERR(waitOnEvents(Queue, phEventWaitList, numEventsInWaitList));
 
+  ol_event_handle_t StartEvent;
+  OL_RETURN_ON_ERR(makeStartEvent(hQueue, Queue, phEvent, &StartEvent));
+
   char *DevPtr =
       reinterpret_cast<char *>(std::get<BufferMem>(hBuffer->Mem).Ptr);
 
   OL_RETURN_ON_ERR(olMemFill(Queue, DevPtr + offset, patternSize,
                              const_cast<void *>(pPattern), size));
-  OL_RETURN_ON_ERR(makeEvent(UR_COMMAND_USM_FILL, Queue, hQueue, phEvent));
+  OL_RETURN_ON_ERR(
+      makeEvent(UR_COMMAND_USM_FILL, Queue, hQueue, phEvent, StartEvent));
 
   return UR_RESULT_SUCCESS;
 }

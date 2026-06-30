@@ -16,6 +16,9 @@
 
 struct ur_event_handle_t_ : RefCounted {
   ol_event_handle_t OffloadEvent;
+  // Command-start marker, only set when the owning queue has profiling enabled.
+  ol_event_handle_t OffloadStartEvent = nullptr;
+  bool HasProfiling = false;
   ur_command_t Type;
   ur_queue_handle_t UrQueue;
 

@@ -10,6 +10,8 @@
 #include <OffloadAPI.h>
 #include <unified-runtime/ur_api.h>
 
+#include "context.hpp"
+#include "device.hpp"
 #include "event.hpp"
 #include "queue.hpp"
 #include "ur2offload.hpp"
@@ -80,12 +82,37 @@ urEventSetCallback(ur_event_handle_t hEvent, ur_execution_info_t execStatus,
   return UR_RESULT_SUCCESS;
 }
 
-UR_APIEXPORT ur_result_t UR_APICALL urEventGetProfilingInfo(ur_event_handle_t,
-                                                            ur_profiling_info_t,
-                                                            size_t, void *,
-                                                            size_t *) {
-  // All variants are optional
-  return UR_RESULT_ERROR_UNSUPPORTED_ENUMERATION;
+UR_APIEXPORT ur_result_t UR_APICALL
+urEventGetProfilingInfo(ur_event_handle_t hEvent, ur_profiling_info_t propName,
+                        size_t propSize, void *pPropValue,
+                        size_t *pPropSizeRet) {
+  UrReturnHelper ReturnValue(propSize, pPropValue, pPropSizeRet);
+
+  if (!hEvent->UrQueue || !hEvent->HasProfiling) {
+    return UR_RESULT_ERROR_PROFILING_INFO_NOT_AVAILABLE;
+  }
+
+  auto *Dev = hEvent->UrQueue->UrContext->Device;
+  uint64_t Ns = 0;
+  switch (propName) {
+  case UR_PROFILING_INFO_COMMAND_QUEUED:
+  case UR_PROFILING_INFO_COMMAND_SUBMIT:
+  case UR_PROFILING_INFO_COMMAND_START:
+    // Liboffload exposes no host-submit timeline, so QUEUED/SUBMIT are
+    // approximated by the command-start device timestamp.
+    if (auto Err = Dev->getElapsedTime(hEvent->OffloadStartEvent, Ns)) {
+      return Err;
+    }
+    return ReturnValue(Ns);
+  case UR_PROFILING_INFO_COMMAND_END:
+  case UR_PROFILING_INFO_COMMAND_COMPLETE:
+    if (auto Err = Dev->getElapsedTime(hEvent->OffloadEvent, Ns)) {
+      return Err;
+    }
+    return ReturnValue(Ns);
+  default:
+    return UR_RESULT_ERROR_INVALID_ENUMERATION;
+  }
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL
@@ -108,6 +135,12 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventRelease(ur_event_handle_t hEvent) {
   if (--hEvent->RefCount == 0) {
     if (hEvent->OffloadEvent) {
       auto Res = olDestroyEvent(hEvent->OffloadEvent);
+      if (Res) {
+        return offloadResultToUR(Res);
+      }
+    }
+    if (hEvent->OffloadStartEvent) {
+      auto Res = olDestroyEvent(hEvent->OffloadStartEvent);
       if (Res) {
         return offloadResultToUR(Res);
       }

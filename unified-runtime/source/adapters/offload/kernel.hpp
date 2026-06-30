@@ -83,6 +83,8 @@ struct ur_kernel_handle_t_ : RefCounted {
 
     const args_ptr_t &getPointers() const noexcept { return Pointers; }
 
+    const args_size_t &getParamSizes() const noexcept { return ParamSizes; }
+
     const char *getStorage() const noexcept { return Storage.data(); }
 
     size_t getStorageSize() const noexcept {
