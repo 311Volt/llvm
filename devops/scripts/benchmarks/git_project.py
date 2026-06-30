@@ -48,6 +48,22 @@ class GitProject:
     def install_dir(self) -> Path:
         return self._directory / f"{self._name}-install"
 
+    @property
+    def _build_complete_marker(self) -> Path:
+        # marker lives in whichever dir needs_rebuild() inspects
+        base = self.install_dir if self._use_installdir else self.build_dir
+        return base / ".llvm_bench_build_complete"
+
+    def _mark_build_complete(self) -> None:
+        """Record that the build/install finished successfully.
+
+        Written only after the relevant command returns without raising, so a
+        failed (or merely configured) directory is never treated as built.
+        """
+        base = self.install_dir if self._use_installdir else self.build_dir
+        base.mkdir(parents=True, exist_ok=True)
+        self._build_complete_marker.write_text(self._ref)
+
     def needs_rebuild(self) -> bool:
         if options.offline:
             log.debug("Rebuild is disabled due to --offline option.")
@@ -60,15 +76,12 @@ class GitProject:
 
         dir_to_check = self.install_dir if self._use_installdir else self.build_dir
 
-        if not (
-            dir_to_check.exists()
-            and any(path.is_file() for path in dir_to_check.glob("**/*"))
-        ):
+        if not self._build_complete_marker.exists():
             log.debug(
-                f"{dir_to_check} does not exist or does not contain any file, rebuild needed."
+                f"{dir_to_check} has no build-completion marker, rebuild needed."
             )
             return True
-        log.debug(f"{dir_to_check} exists and is not empty, no rebuild needed.")
+        log.debug(f"{dir_to_check} build previously completed, no rebuild needed.")
         return False
 
     def configure(
@@ -109,10 +122,17 @@ class GitProject:
             ld_library=ld_library,
             timeout=timeout,
         )
+        # When the build dir is the final artifact dir, the build succeeding
+        # (run() didn't raise) means the project is ready to use.
+        if not self._use_installdir:
+            self._mark_build_complete()
 
     def install(self) -> None:
         """Installs the project."""
         run(f"cmake --install {self.build_dir}")
+        # The install dir is only complete once cmake --install succeeds.
+        if self._use_installdir:
+            self._mark_build_complete()
 
     def _can_shallow_clone_ref(self, ref: str) -> bool:
         """Check if we can do a shallow clone with this ref using git ls-remote."""

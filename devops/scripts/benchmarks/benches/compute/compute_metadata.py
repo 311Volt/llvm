@@ -34,6 +34,7 @@ class Tags:
     SYCL: str
     UR: str
     L0: str
+    OL: str
     graph: str
     memory: str
     proxy: str

@@ -124,8 +124,10 @@ class ComputeBenchmark(Benchmark):
 
     def _supported_runtimes(self) -> list[RUNTIMES]:
         """Base runtimes supported by this benchmark, can be overridden."""
-        # By default, support all runtimes except SYCL_PREVIEW
-        return [r for r in RUNTIMES if r != RUNTIMES.SYCL_PREVIEW]
+        # By default, support all runtimes except SYCL_PREVIEW and OL.
+        # OL (the LLVM Offload API) only has a SubmitKernel implementation,
+        # so it is opted into per-benchmark rather than enabled globally.
+        return [r for r in RUNTIMES if r not in (RUNTIMES.SYCL_PREVIEW, RUNTIMES.OL)]
 
     def _extra_env_vars(self) -> dict:
         return {}
@@ -146,9 +148,16 @@ class ComputeBenchmark(Benchmark):
         # Start with all supported runtimes and apply configuration filters
         runtimes = self._supported_runtimes()
 
-        # Remove Level Zero if using CUDA backend
+        # Remove Level Zero when targeting an NVIDIA/CUDA backend, where the
+        # L0 implementations cannot run.
         if options.ur_adapter == "cuda":
             runtimes = [r for r in runtimes if r != RUNTIMES.LEVEL_ZERO]
+
+        # OL (LLVM Offload) is only meaningful where liboffload is built and a
+        # supported plugin (e.g. CUDA) is present. Restrict it to the CUDA
+        # backend; on Level Zero targets it would have nothing to run against.
+        if options.ur_adapter != "cuda":
+            runtimes = [r for r in runtimes if r != RUNTIMES.OL]
 
         return runtimes
 

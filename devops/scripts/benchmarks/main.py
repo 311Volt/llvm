@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "matplotlib==3.9.2",
+#   "mpld3==0.5.10",
+#   "dataclasses-json==0.6.7",
+#   "PyYAML==6.0.1",
+#   "Mako==1.3.12",
+#   "psutil>=7.0.0"
+# ]
+# ///
 
 # Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.

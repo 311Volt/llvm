@@ -24,6 +24,7 @@ def runtime_to_name(runtime: RUNTIMES) -> str:
         RUNTIMES.SYCL: "SYCL",
         RUNTIMES.LEVEL_ZERO: "Level Zero",
         RUNTIMES.UR: "Unified Runtime",
+        RUNTIMES.OL: "Offload",
     }[runtime]
 
 
@@ -36,11 +37,11 @@ class ComputeBench(Suite):
         return "Compute Benchmarks"
 
     def git_url(self) -> str:
-        return "https://github.com/intel/compute-benchmarks.git"
+        return "https://github.com/311Volt/drivers.gpu.compute.benchmarks.git"
 
     def git_hash(self) -> str:
-        # Apr 22, 2026
-        return "9f1624abf5073f81549f9d49c1cb5d3f8d3bcd83"
+        # 2026-06-29 offload SubmitKernel PR
+        return "e74f1fea463cbf92a808d6c05faefe783e4a39d2"
 
     def setup(self) -> None:
         if options.sycl is None:
@@ -82,6 +83,25 @@ class ComputeBench(Suite):
                 "-DBUILD_L0=OFF",
                 "-DBUILD_OCL=OFF",
             ]
+
+            # Build the OL (LLVM Offload) implementation so SubmitKernel can
+            # measure liboffload's overhead directly, against the native CUDA
+            # stack used by the SYCL and UR runtimes. liboffload lives outside
+            # the SYCL build tree; its location is configurable via env vars.
+            offload_install_dir = os.environ.get("OFFLOAD_INSTALL_DIR", "")
+            offload_include_dir = os.environ.get("OFFLOAD_INCLUDE_DIR", "")
+            if offload_install_dir and offload_include_dir:
+                extra_args += [
+                    "-DBUILD_OL=ON",
+                    f"-DOFFLOAD_INSTALL_DIR={offload_install_dir}",
+                    f"-DOFFLOAD_INCLUDE_DIR={offload_include_dir}",
+                ]
+            else:
+                log.warning(
+                    "OFFLOAD_INSTALL_DIR / OFFLOAD_INCLUDE_DIR not set; "
+                    "skipping the OL (LLVM Offload) build. SubmitKernel OL "
+                    "variants will be generated but have no binary to run."
+                )
 
         self._project.configure(extra_args, add_sycl=True)
         self._project.build(add_sycl=True)
@@ -845,7 +865,9 @@ class SubmitKernel(ComputeBenchmark):
         return (0.0, None)
 
     def _supported_runtimes(self) -> list[RUNTIMES]:
-        return super()._supported_runtimes() + [RUNTIMES.SYCL_PREVIEW]
+        # SubmitKernel is the one benchmark with an OL (LLVM Offload)
+        # implementation, so it opts OL in on top of the base runtimes.
+        return super()._supported_runtimes() + [RUNTIMES.SYCL_PREVIEW, RUNTIMES.OL]
 
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
