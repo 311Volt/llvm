@@ -37,23 +37,33 @@ class ComputeBench(Suite):
         return "Compute Benchmarks"
 
     def git_url(self) -> str:
-        return "https://github.com/311Volt/drivers.gpu.compute.benchmarks.git"
+        if options.compute_benchmarks_git_url:
+            return options.compute_benchmarks_git_url
+        return "https://github.com/intel/compute-benchmarks.git"
 
     def git_hash(self) -> str:
-        # 2026-06-29 offload SubmitKernel PR
-        return "e74f1fea463cbf92a808d6c05faefe783e4a39d2"
+        if options.compute_benchmarks_git_hash:
+            return options.compute_benchmarks_git_hash
+        # 2026-04-22
+        return "9f1624abf5073f81549f9d49c1cb5d3f8d3bcd83"
 
     def setup(self) -> None:
         if options.sycl is None:
             return
 
         if self._project is None:
+            src_dir_override = (
+                Path(options.compute_benchmarks_source_dir)
+                if options.compute_benchmarks_source_dir
+                else None
+            )
             self._project = GitProject(
                 self.git_url(),
                 self.git_hash(),
                 Path(options.workdir),
                 "compute-benchmarks",
                 use_installdir=False,
+                src_dir_override=src_dir_override,
             )
 
         if not self._project.needs_rebuild():
@@ -84,24 +94,27 @@ class ComputeBench(Suite):
                 "-DBUILD_OCL=OFF",
             ]
 
-            # Build the OL (LLVM Offload) implementation so SubmitKernel can
-            # measure liboffload's overhead directly, against the native CUDA
-            # stack used by the SYCL and UR runtimes. liboffload lives outside
-            # the SYCL build tree; its location is configurable via env vars.
-            offload_install_dir = os.environ.get("OFFLOAD_INSTALL_DIR", "")
-            offload_include_dir = os.environ.get("OFFLOAD_INCLUDE_DIR", "")
-            if offload_install_dir and offload_include_dir:
-                extra_args += [
-                    "-DBUILD_OL=ON",
-                    f"-DOFFLOAD_INSTALL_DIR={offload_install_dir}",
-                    f"-DOFFLOAD_INCLUDE_DIR={offload_include_dir}",
-                ]
-            else:
-                log.warning(
-                    "OFFLOAD_INSTALL_DIR / OFFLOAD_INCLUDE_DIR not set; "
-                    "skipping the OL (LLVM Offload) build. SubmitKernel OL "
-                    "variants will be generated but have no binary to run."
-                )
+        # Build the OL (LLVM Offload) implementation so SubmitKernel can measure
+        # liboffload's overhead directly, against the native stack used by the
+        # SYCL and UR runtimes. liboffload dispatches to whichever plugin the
+        # target device needs (CUDA, Level Zero, ...), so the OL build is
+        # backend-agnostic and only depends on liboffload being available.
+        # liboffload lives outside the SYCL build tree; its location is
+        # configurable via env vars.
+        offload_install_dir = os.environ.get("OFFLOAD_INSTALL_DIR", "")
+        offload_include_dir = os.environ.get("OFFLOAD_INCLUDE_DIR", "")
+        if offload_install_dir and offload_include_dir:
+            extra_args += [
+                "-DBUILD_OL=ON",
+                f"-DOFFLOAD_INSTALL_DIR={offload_install_dir}",
+                f"-DOFFLOAD_INCLUDE_DIR={offload_include_dir}",
+            ]
+        else:
+            log.warning(
+                "OFFLOAD_INSTALL_DIR / OFFLOAD_INCLUDE_DIR not set; "
+                "skipping the OL (LLVM Offload) build. SubmitKernel OL "
+                "variants will be generated but have no binary to run."
+            )
 
         self._project.configure(extra_args, add_sycl=True)
         self._project.build(add_sycl=True)
@@ -707,16 +720,40 @@ class ComputeBench(Suite):
             # MemcpyExecute(self, RUNTIMES.UR, 100, 4, 102400, 10, 1, 1, 0, 0, 0),
             # MemcpyExecute(self, RUNTIMES.UR, 4096, 4, 1024, 10, 0, 1, 0, 1, 0),
             # MemcpyExecute(self, RUNTIMES.UR, 4096, 4, 1024, 10, 0, 1, 0, 1, 1),
-            UsmMemoryAllocation(self, RUNTIMES.UR, "Device", 256, "Both"),
-            UsmMemoryAllocation(self, RUNTIMES.UR, "Device", 256 * 1024, "Both"),
-            UsmBatchMemoryAllocation(self, RUNTIMES.UR, "Device", 128, 256, "Both"),
-            UsmBatchMemoryAllocation(
-                self, RUNTIMES.UR, "Device", 128, 16 * 1024, "Both"
-            ),
-            UsmBatchMemoryAllocation(
-                self, RUNTIMES.UR, "Device", 128, 128 * 1024, "Both"
-            ),
         ]
+
+        # USM allocation / memcpy micro-benchmarks. Each benchmark class opts
+        # into the runtimes it has a Compute Benchmarks implementation for (see
+        # its _supported_runtimes); instances for runtimes not enabled by the
+        # current configuration are filtered out by Benchmark.enabled(). We
+        # therefore create one instance per candidate runtime and let the
+        # framework prune the rest.
+        #   UsmMemoryAllocation:      UR, L0, OL
+        #   UsmBatchMemoryAllocation: UR, OL
+        #   UsmRandomMemoryAllocation: UR, OL
+        #   AppendMemCopy:            L0, OL
+        for runtime in [RUNTIMES.UR, RUNTIMES.LEVEL_ZERO, RUNTIMES.OL]:
+            benches += [
+                UsmMemoryAllocation(self, runtime, "Device", 256, "Both"),
+                UsmMemoryAllocation(self, runtime, "Device", 256 * 1024, "Both"),
+            ]
+        for runtime in [RUNTIMES.UR, RUNTIMES.OL]:
+            benches += [
+                UsmBatchMemoryAllocation(self, runtime, "Device", 128, 256, "Both"),
+                UsmBatchMemoryAllocation(
+                    self, runtime, "Device", 128, 16 * 1024, "Both"
+                ),
+                UsmBatchMemoryAllocation(
+                    self, runtime, "Device", 128, 128 * 1024, "Both"
+                ),
+                UsmRandomMemoryAllocation(
+                    self, runtime, "Device", 1000, 64, 64 * 1024, "Uniform"
+                ),
+            ]
+        for runtime in [RUNTIMES.LEVEL_ZERO, RUNTIMES.OL]:
+            benches += [
+                AppendMemCopy(self, runtime, "Device", "Device", 1024, 100),
+            ]
 
         benches += [
             MemcpyExecute(
@@ -785,7 +822,7 @@ class SubmitKernel(ComputeBenchmark):
         self._kernel_exec_time = KernelExecTime
         self._num_kernels = 10
         # iterations set per existing bin_args: --iterations=100000
-        self._iterations_regular = 100000
+        self._iterations_regular = 10000
         self._iterations_trace = 10
         super().__init__(
             bench,
@@ -868,6 +905,14 @@ class SubmitKernel(ComputeBenchmark):
         # SubmitKernel is the one benchmark with an OL (LLVM Offload)
         # implementation, so it opts OL in on top of the base runtimes.
         return super()._supported_runtimes() + [RUNTIMES.SYCL_PREVIEW, RUNTIMES.OL]
+
+    def _extra_env_vars(self) -> dict:
+        # The OL binary loads all liboffload plugins and picks the device whose
+        # platform backend matches OFFLOAD_BENCHMARK_PLUGIN. Pass the selection
+        # through for the OL runtime only.
+        if self._runtime == RUNTIMES.OL and options.offload_plugin:
+            return {"OFFLOAD_BENCHMARK_PLUGIN": options.offload_plugin}
+        return {}
 
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
@@ -1525,6 +1570,11 @@ class UsmMemoryAllocation(ComputeBenchmark):
     def get_tags(self):
         return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
 
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        # A Compute Benchmarks OL (LLVM Offload) implementation exists, so opt
+        # OL in on top of the base runtimes.
+        return super()._supported_runtimes() + [RUNTIMES.OL]
+
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
         return [
@@ -1589,6 +1639,11 @@ class UsmBatchMemoryAllocation(ComputeBenchmark):
     def get_tags(self):
         return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
 
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        # A Compute Benchmarks OL (LLVM Offload) implementation exists, so opt
+        # OL in on top of the base runtimes.
+        return super()._supported_runtimes() + [RUNTIMES.OL]
+
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
         return [
@@ -1597,6 +1652,143 @@ class UsmBatchMemoryAllocation(ComputeBenchmark):
             f"--allocationCount={self._allocation_count}",
             f"--size={self._size}",
             f"--measureMode={self._measure_mode}",
+        ]
+
+
+class UsmRandomMemoryAllocation(ComputeBenchmark):
+    def __init__(
+        self,
+        bench,
+        runtime: RUNTIMES,
+        usm_memory_placement,
+        operation_count,
+        min_size,
+        max_size,
+        size_distribution,
+    ):
+        self._usm_memory_placement = usm_memory_placement
+        self._operation_count = operation_count
+        self._min_size = min_size
+        self._max_size = max_size
+        self._size_distribution = size_distribution
+        # iterations per bin_args: --iterations=1000
+        self._iterations_regular = 1000
+        self._iterations_trace = 10
+        super().__init__(
+            bench,
+            f"api_overhead_benchmark_{runtime.value}",
+            "UsmRandomMemoryAllocation",
+            runtime,
+        )
+
+    def name(self):
+        return (
+            f"api_overhead_benchmark_{self._runtime.value} UsmRandomMemoryAllocation "
+            f"usmMemoryPlacement:{self._usm_memory_placement} operationCount:{self._operation_count} "
+            f"minSize:{self._min_size} maxSize:{self._max_size} sizeDistribution:{self._size_distribution}"
+        )
+
+    def display_name(self) -> str:
+        return (
+            f"{self._runtime.value.upper()} UsmRandomMemoryAllocation, "
+            f"usmMemoryPlacement {self._usm_memory_placement}, operationCount {self._operation_count}, "
+            f"minSize {self._min_size}, maxSize {self._max_size}, sizeDistribution {self._size_distribution}"
+        )
+
+    def explicit_group(self):
+        return f"UsmRandomMemoryAllocation"
+
+    def description(self) -> str:
+        return (
+            f"Measures memory allocation overhead by randomly allocating and free'ing "
+            f"usm {self._usm_memory_placement} memory ({self._operation_count} operations, "
+            f"sizes from {self._min_size} to {self._max_size} bytes, {self._size_distribution} distribution). "
+        )
+
+    def get_tags(self):
+        return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
+
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        # A Compute Benchmarks OL (LLVM Offload) implementation exists, so opt
+        # OL in on top of the base runtimes.
+        return super()._supported_runtimes() + [RUNTIMES.OL]
+
+    def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
+        iters = self._get_iters(flamegraph_enabled)
+        return [
+            f"--iterations={iters}",
+            f"--type={self._usm_memory_placement}",
+            f"--operationCount={self._operation_count}",
+            f"--minSize={self._min_size}",
+            f"--maxSize={self._max_size}",
+            f"--sizeDistribution={self._size_distribution}",
+        ]
+
+
+class AppendMemCopy(ComputeBenchmark):
+    def __init__(
+        self,
+        bench,
+        runtime: RUNTIMES,
+        source,
+        destination,
+        size,
+        append_count,
+        use_event=0,
+    ):
+        self._source = source
+        self._destination = destination
+        self._size = size
+        self._append_count = append_count
+        self._use_event = use_event
+        # iterations per bin_args: --iterations=1000
+        self._iterations_regular = 1000
+        self._iterations_trace = 10
+        super().__init__(
+            bench,
+            f"api_overhead_benchmark_{runtime.value}",
+            "AppendMemCopy",
+            runtime,
+        )
+
+    def name(self):
+        return (
+            f"api_overhead_benchmark_{self._runtime.value} AppendMemCopy "
+            f"from {self._source} to {self._destination}, size {self._size}, appendCount {self._append_count}"
+        )
+
+    def display_name(self) -> str:
+        return (
+            f"{self._runtime.value.upper()} AppendMemCopy, "
+            f"from {self._source} to {self._destination}, size {self._size}, appendCount {self._append_count}"
+        )
+
+    def explicit_group(self):
+        return f"AppendMemCopy"
+
+    def description(self) -> str:
+        return (
+            f"Measures CPU-side overhead of appending {self._append_count} memory copies "
+            f"of {self._size} bytes from {self._source} to {self._destination} memory to a queue/command list. "
+        )
+
+    def get_tags(self):
+        return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
+
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        # AppendMemCopy has Level Zero and OL (LLVM Offload) implementations only.
+        return [RUNTIMES.LEVEL_ZERO, RUNTIMES.OL]
+
+    def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
+        iters = self._get_iters(flamegraph_enabled)
+        return [
+            f"--iterations={iters}",
+            f"--size={self._size}",
+            f"--event={self._use_event}",
+            f"--src={self._source}",
+            f"--dst={self._destination}",
+            f"--appendCount={self._append_count}",
+            "--forceBlitter=0",
         ]
 
 

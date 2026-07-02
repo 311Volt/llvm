@@ -305,7 +305,7 @@ runs:
       numactl --cpunodebind "$NUMA_NODE" --membind "$NUMA_NODE" \
       ./devops/scripts/benchmarks/main.py "$BENCH_WORKDIR" \
         --sycl "$(realpath $CMPLR_ROOT)" \
-        --adapter "$FORCELOAD_ADAPTER" \
+        --ur-adapter "$FORCELOAD_ADAPTER" \
         --save "$SAVE_NAME" \
         --output-html remote \
         --results-dir "${BENCHMARK_RESULTS_REPO_PATH}/" \

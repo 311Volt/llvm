@@ -153,10 +153,11 @@ class ComputeBenchmark(Benchmark):
         if options.ur_adapter == "cuda":
             runtimes = [r for r in runtimes if r != RUNTIMES.LEVEL_ZERO]
 
-        # OL (LLVM Offload) is only meaningful where liboffload is built and a
-        # supported plugin (e.g. CUDA) is present. Restrict it to the CUDA
-        # backend; on Level Zero targets it would have nothing to run against.
-        if options.ur_adapter != "cuda":
+        # OL (LLVM Offload) dispatches to liboffload, whose plugin is chosen by
+        # --offload-plugin (independent of the UR adapter). Drop OL unless a
+        # supported plugin was requested.
+        _SUPPORTED_OFFLOAD_PLUGINS = ("cuda", "amdgpu", "level_zero", "host")
+        if options.offload_plugin not in _SUPPORTED_OFFLOAD_PLUGINS:
             runtimes = [r for r in runtimes if r != RUNTIMES.OL]
 
         return runtimes

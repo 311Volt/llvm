@@ -51,6 +51,7 @@ class Options:
     workdir: str = None
     sycl: str = None
     ur_adapter: str = None
+    offload_plugin: str = None
     umf: str = None
     pytorch_root: str = None
     offline: bool = False
@@ -97,6 +98,14 @@ class Options:
     # CI scripts vs SYCl build source.
     github_repo_override: str = None
     git_commit_override: str = None
+    # Overrides for the Compute Benchmarks git checkout. When unset, the
+    # defaults in ComputeBench.git_url()/git_hash() (upstream intel) are used.
+    compute_benchmarks_git_url: str = None
+    compute_benchmarks_git_hash: str = None
+    # Path to an already-cloned Compute Benchmarks source tree to build from
+    # instead of cloning. Intended for local benchmark-code development. Mutually
+    # exclusive with the git url/hash overrides above.
+    compute_benchmarks_source_dir: str = None
     # Flag and filenames used to store Github summary files:
     produce_github_summary: bool = False
     github_summary_execution_filename: str = "github_summary_exe.md"

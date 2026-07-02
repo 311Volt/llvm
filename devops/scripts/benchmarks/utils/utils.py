@@ -243,7 +243,7 @@ def warn_if_level_zero_is_not_found(additional_env_vars) -> bool:
 
     if not "level_zero" in options.ur_adapter:
         log.warning(
-            f"  None of Level Zero adapters were set in main.py '--adapter' param."
+            f"  None of Level Zero adapters were set in main.py '--ur-adapter' param."
         )
         warning_found = True
     if not sycl_ls_found_l0:

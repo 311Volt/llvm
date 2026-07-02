@@ -25,12 +25,16 @@ $ git clone https://github.com/intel/llvm.git
 $ cd llvm/devops/scripts/benchmarks/
 $ pip install -r requirements.txt
 
-$ ./main.py ~/benchmarks_workdir/ --sycl ~/llvm/build/ --adapter adapter_name
+$ ./main.py ~/benchmarks_workdir/ --sycl ~/llvm/build/ --ur-adapter adapter_name
 ```
 
 This last command will **download and build** everything in `~/benchmarks_workdir/` using
 the built compiler located in `~/llvm/build/` (which should also contain Unified Runtime libraries),
 and then **run** the benchmarks for `adapter_name` adapter.
+
+The OL (LLVM Offload) benchmarks target a liboffload plugin selected via
+`--offload-plugin` (one of `cuda`, `amdgpu`, `level_zero`, `host`; default
+`level_zero`), which also gates whether the OL benchmarks run.
 
 The scripts will try to reuse the files stored in `~/benchmarks_workdir/`. 
 If any dependant projects binaries are already built, they will not be rebuilt

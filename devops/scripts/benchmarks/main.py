@@ -518,10 +518,17 @@ if __name__ == "__main__":
         help="Directory with PyTorch benchmark scripts, omit to skip PyTorch Bench suite",
     )
     parser.add_argument(
-        "--adapter",
+        "--ur-adapter",
         type=str,
         help="Unified Runtime adapter to use.",
         default="level_zero",
+    )
+    parser.add_argument(
+        "--offload-plugin",
+        type=str,
+        choices=["cuda", "amdgpu", "level_zero", "host"],
+        default="level_zero",
+        help="liboffload plugin the OL (LLVM Offload) benchmarks target. Gates OL benchmark enablement.",
     )
     parser.add_argument(
         "--offline",
@@ -740,6 +747,31 @@ if __name__ == "__main__":
         help="Manually specify commit hash metadata of component tested (e.g. SYCL, UMF)",
         default=options.git_commit_override,
     )
+    parser.add_argument(
+        "--compute-benchmarks-git-url",
+        type=str,
+        help="Override the git url used to fetch the Compute Benchmarks suite",
+        default=options.compute_benchmarks_git_url,
+    )
+    parser.add_argument(
+        "--compute-benchmarks-git-hash",
+        type=lambda commit: Validate.commit_hash(
+            commit,
+            throw=argparse.ArgumentTypeError(
+                "Specified compute benchmarks git hash is not a valid commit hash"
+            ),
+        ),
+        help="Override the git hash used to fetch the Compute Benchmarks suite",
+        default=options.compute_benchmarks_git_hash,
+    )
+    parser.add_argument(
+        "--compute-benchmarks-source-dir",
+        type=str,
+        help="Path to an already-cloned Compute Benchmarks source tree to build "
+        "from instead of cloning. For local benchmark-code development. "
+        "Incompatible with --compute-benchmarks-git-url/--compute-benchmarks-git-hash.",
+        default=options.compute_benchmarks_source_dir,
+    )
 
     parser.add_argument(
         "--detect-version",
@@ -798,7 +830,8 @@ if __name__ == "__main__":
     options.sycl = args.sycl
     options.iterations = args.iterations
     options.timeout = args.timeout
-    options.ur_adapter = args.adapter
+    options.ur_adapter = args.ur_adapter
+    options.offload_plugin = args.offload_plugin
     options.exit_on_failure = args.exit_on_failure
     options.save_name = args.save
     options.compare = Compare(args.compare_type)
@@ -857,6 +890,25 @@ if __name__ == "__main__":
             parser.error("--github-repo and --git_commit must both be defined together")
         options.github_repo_override = args.github_repo
         options.git_commit_override = args.git_commit
+    # These may be set independently to override just the URL or just the hash.
+    options.compute_benchmarks_git_url = args.compute_benchmarks_git_url
+    options.compute_benchmarks_git_hash = args.compute_benchmarks_git_hash
+    if args.compute_benchmarks_source_dir is not None:
+        if (
+            args.compute_benchmarks_git_url is not None
+            or args.compute_benchmarks_git_hash is not None
+        ):
+            parser.error(
+                "--compute-benchmarks-source-dir is incompatible with "
+                "--compute-benchmarks-git-url/--compute-benchmarks-git-hash"
+            )
+        if not os.path.isdir(args.compute_benchmarks_source_dir):
+            parser.error(
+                "Specified --compute-benchmarks-source-dir is not a valid path"
+            )
+        options.compute_benchmarks_source_dir = os.path.abspath(
+            args.compute_benchmarks_source_dir
+        )
 
     # Automatically detect versions:
     if args.detect_version is not None:
@@ -894,6 +946,9 @@ if __name__ == "__main__":
 
     if options.ur_adapter:
         log.info(f"Selected adapter (to force load): {options.ur_adapter}")
+
+    if options.offload_plugin:
+        log.info(f"Selected offload plugin (OL benchmarks): {options.offload_plugin}")
 
     try:
         if warn_if_level_zero_is_not_found(additional_env_vars):

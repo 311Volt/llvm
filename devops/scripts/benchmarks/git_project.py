@@ -2,6 +2,8 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +23,7 @@ class GitProject:
         use_installdir: bool = True,
         no_suffix_src: bool = False,
         shallow_clone: bool = True,
+        src_dir_override: Path | None = None,
     ) -> None:
         self._url = url
         self._ref = ref
@@ -29,6 +32,12 @@ class GitProject:
         self._use_installdir = use_installdir
         self._no_suffix_src = no_suffix_src
         self._shallow_clone = shallow_clone
+        # When set, build from this already-present source tree instead of
+        # cloning/fetching. Used for local development against a checkout the
+        # user manages themselves - no git operations are performed on it.
+        self._src_dir_override = (
+            Path(src_dir_override) if src_dir_override is not None else None
+        )
         self._rebuild_needed = self._setup_repo()
 
     @property
@@ -37,6 +46,8 @@ class GitProject:
 
     @property
     def src_dir(self) -> Path:
+        if self._src_dir_override is not None:
+            return self._src_dir_override
         suffix = "" if self._no_suffix_src else "-src"
         return self._directory / f"{self._name}{suffix}"
 
@@ -52,17 +63,60 @@ class GitProject:
     def _build_complete_marker(self) -> Path:
         # marker lives in whichever dir needs_rebuild() inspects
         base = self.install_dir if self._use_installdir else self.build_dir
-        return base / ".llvm_bench_build_complete"
+        return base / ".llvm_bench_build_complete.json"
+
+    def _git_worktree_fingerprint(self) -> str | None:
+        """Fingerprint the source tree's git working state, or None if src_dir
+        is not a git repository.
+
+        Combines the HEAD commit, the porcelain status (which files are
+        modified/staged/untracked), and the diff of tracked changes so that any
+        committed or uncommitted change to tracked files invalidates a prior
+        build.
+        """
+        if not Path(self.src_dir, ".git").exists():
+            return None
+        try:
+            parts = []
+            for cmd in (
+                "git rev-parse HEAD",
+                "git status --porcelain",
+                "git diff HEAD",
+            ):
+                parts.append(run(cmd, cwd=self.src_dir).stdout.decode(errors="replace"))
+            return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+        except Exception as e:
+            log.debug(f"Could not fingerprint git worktree at {self.src_dir}: {e}")
+            return None
+
+    def _read_build_marker(self) -> dict:
+        """Return the parsed build-completion marker, or {} if absent/invalid."""
+        if not self._build_complete_marker.exists():
+            return {}
+        try:
+            return json.loads(self._build_complete_marker.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log.debug(f"Could not read build marker {self._build_complete_marker}: {e}")
+            return {}
 
     def _mark_build_complete(self) -> None:
         """Record that the build/install finished successfully.
 
         Written only after the relevant command returns without raising, so a
-        failed (or merely configured) directory is never treated as built.
+        failed (or merely configured) directory is never treated as built. The
+        marker stores the ref, url, and (for a git source tree) the working-tree
+        fingerprint, so a later run can skip rebuilding an unchanged tree.
         """
         base = self.install_dir if self._use_installdir else self.build_dir
         base.mkdir(parents=True, exist_ok=True)
-        self._build_complete_marker.write_text(self._ref)
+        metadata = {
+            "ref": self._ref,
+            "url": self._url,
+            "src_dir": str(self.src_dir),
+        }
+        if self._src_dir_override is not None:
+            metadata["worktree_fingerprint"] = self._git_worktree_fingerprint()
+        self._build_complete_marker.write_text(json.dumps(metadata, indent=2))
 
     def needs_rebuild(self) -> bool:
         if options.offline:
@@ -199,6 +253,32 @@ class GitProject:
         Returns:
             bool: True if the repository was cloned or updated, False if it was already up-to-date.
         """
+        if self._src_dir_override is not None:
+            if not self.src_dir.exists():
+                raise Exception(
+                    f"Specified source directory {self.src_dir} does not exist."
+                )
+            # No git operations are performed on a user-managed tree. If it's a
+            # git repo and its working-tree state matches the last successful
+            # build, skip rebuilding; otherwise (non-git, or changed) rebuild.
+            fingerprint = self._git_worktree_fingerprint()
+            if fingerprint is None:
+                log.debug(
+                    f"Source tree at {self.src_dir} is not a git repository; "
+                    "rebuilding to be safe."
+                )
+                return True
+            if self._read_build_marker().get("worktree_fingerprint") == fingerprint:
+                log.debug(
+                    f"Source tree at {self.src_dir} unchanged since last build; "
+                    "no rebuild needed."
+                )
+                return False
+            log.debug(
+                f"Source tree at {self.src_dir} changed since last build; "
+                "rebuild needed."
+            )
+            return True
         if os.environ.get("LLVM_BENCHMARKS_UNIT_TESTING") == "1":
             log.debug(
                 f"Skipping git operations during unit testing of {self._name} (LLVM_BENCHMARKS_UNIT_TESTING=1)."
