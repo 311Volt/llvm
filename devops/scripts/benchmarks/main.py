@@ -564,6 +564,14 @@ if __name__ == "__main__":
         default=options.force_offload_plugin,
     )
     parser.add_argument(
+        "--ur-l0-disable-usm-allocator",
+        help="Export UR_L0_DISABLE_USM_ALLOCATOR=1 for the UR runtime in the USM "
+        "allocation benchmarks, bypassing the L0 USM pooling allocator so the "
+        "UR<->OL comparison stays apples-to-apples. Disabled by default.",
+        action=argparse.BooleanOptionalAction,
+        default=options.ur_l0_disable_usm_allocator,
+    )
+    parser.add_argument(
         "--env",
         type=str,
         help="Use env variable for a benchmark run.",
@@ -828,6 +836,7 @@ if __name__ == "__main__":
     options.offload_install_dir = args.offload_install_dir
     options.offload_include_dir = args.offload_include_dir
     options.force_offload_plugin = args.force_offload_plugin
+    options.ur_l0_disable_usm_allocator = args.ur_l0_disable_usm_allocator
     options.sycl = args.sycl
     options.iterations = args.iterations
     options.timeout = args.timeout

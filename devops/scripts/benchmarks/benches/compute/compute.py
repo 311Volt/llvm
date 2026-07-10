@@ -28,6 +28,34 @@ def runtime_to_name(runtime: RUNTIMES) -> str:
     }[runtime]
 
 
+def _usm_alloc_supported_runtimes() -> list[RUNTIMES]:
+    """Runtimes supported by the USM allocation benchmarks.
+
+    These benchmarks are used to compare UR against OL (liboffload), so on top
+    of the default runtimes we opt OL in when it was built via
+    --offload-install-dir / --offload-include-dir.
+    """
+    # Mirror ComputeBenchmark._supported_runtimes() defaults (all runtimes
+    # except SYCL_PREVIEW and OL), then opt OL back in when available.
+    runtimes = [r for r in RUNTIMES if r not in (RUNTIMES.SYCL_PREVIEW, RUNTIMES.OL)]
+    if options.offload_install_dir and options.offload_include_dir:
+        runtimes.append(RUNTIMES.OL)
+    return runtimes
+
+
+def _usm_alloc_extra_env_vars(runtime: RUNTIMES) -> dict:
+    """Env vars for the USM allocation benchmarks.
+
+    For an apples-to-apples comparison against OL, the UR runtime disables its
+    L0 USM pooling allocator so that most of the delta between UR and OL stays
+    in liboffload's allocation bookkeeping overhead, which is what we want to
+    measure. Controlled by --ur-l0-disable-usm-allocator (on by default).
+    """
+    if runtime == RUNTIMES.UR and options.ur_l0_disable_usm_allocator:
+        return {"UR_L0_DISABLE_USM_ALLOCATOR": "1"}
+    return {}
+
+
 class ComputeBench(Suite):
     def __init__(self):
         self._submit_graph_num_kernels = [4, 10, 32]
@@ -701,16 +729,26 @@ class ComputeBench(Suite):
             # MemcpyExecute(self, RUNTIMES.UR, 100, 4, 102400, 10, 1, 1, 0, 0, 0),
             # MemcpyExecute(self, RUNTIMES.UR, 4096, 4, 1024, 10, 0, 1, 0, 1, 0),
             # MemcpyExecute(self, RUNTIMES.UR, 4096, 4, 1024, 10, 0, 1, 0, 1, 1),
-            UsmMemoryAllocation(self, RUNTIMES.UR, "Device", 256, "Both"),
-            UsmMemoryAllocation(self, RUNTIMES.UR, "Device", 256 * 1024, "Both"),
-            UsmBatchMemoryAllocation(self, RUNTIMES.UR, "Device", 128, 256, "Both"),
-            UsmBatchMemoryAllocation(
-                self, RUNTIMES.UR, "Device", 128, 16 * 1024, "Both"
-            ),
-            UsmBatchMemoryAllocation(
-                self, RUNTIMES.UR, "Device", 128, 128 * 1024, "Both"
-            ),
         ]
+
+        # USM allocation benchmarks: run for UR and OL (liboffload) so the two
+        # can be compared apples-to-apples. OL instances are filtered out later
+        # by enabled()/_supported_runtimes() unless liboffload was built in.
+        for runtime in (RUNTIMES.UR, RUNTIMES.OL):
+            benches += [
+                UsmMemoryAllocation(self, runtime, "Device", 256, "Both"),
+                UsmMemoryAllocation(self, runtime, "Device", 256 * 1024, "Both"),
+                UsmBatchMemoryAllocation(self, runtime, "Device", 128, 256, "Both"),
+                UsmBatchMemoryAllocation(
+                    self, runtime, "Device", 128, 16 * 1024, "Both"
+                ),
+                UsmBatchMemoryAllocation(
+                    self, runtime, "Device", 128, 128 * 1024, "Both"
+                ),
+                UsmRandomMemoryAllocation(
+                    self, runtime, "Device", 128, 1024, 1024 * 1024, "Uniform"
+                ),
+            ]
 
         benches += [
             MemcpyExecute(
@@ -1522,6 +1560,12 @@ class UsmMemoryAllocation(ComputeBenchmark):
     def get_tags(self):
         return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
 
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        return _usm_alloc_supported_runtimes()
+
+    def _extra_env_vars(self) -> dict:
+        return _usm_alloc_extra_env_vars(self._runtime)
+
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
         return [
@@ -1586,6 +1630,12 @@ class UsmBatchMemoryAllocation(ComputeBenchmark):
     def get_tags(self):
         return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
 
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        return _usm_alloc_supported_runtimes()
+
+    def _extra_env_vars(self) -> dict:
+        return _usm_alloc_extra_env_vars(self._runtime)
+
     def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
         iters = self._get_iters(flamegraph_enabled)
         return [
@@ -1594,6 +1644,79 @@ class UsmBatchMemoryAllocation(ComputeBenchmark):
             f"--allocationCount={self._allocation_count}",
             f"--size={self._size}",
             f"--measureMode={self._measure_mode}",
+        ]
+
+
+class UsmRandomMemoryAllocation(ComputeBenchmark):
+    def __init__(
+        self,
+        bench,
+        runtime: RUNTIMES,
+        usm_memory_placement,
+        operation_count,
+        min_size,
+        max_size,
+        size_distribution,
+    ):
+        self._usm_memory_placement = usm_memory_placement
+        self._operation_count = operation_count
+        self._min_size = min_size
+        self._max_size = max_size
+        self._size_distribution = size_distribution
+        # iterations per bin_args: --iterations=1000
+        self._iterations_regular = 1000
+        self._iterations_trace = 10
+        super().__init__(
+            bench,
+            f"api_overhead_benchmark_{runtime.value}",
+            "UsmRandomMemoryAllocation",
+            runtime,
+        )
+
+    def name(self):
+        return (
+            f"api_overhead_benchmark_{self._runtime.value} UsmRandomMemoryAllocation "
+            f"usmMemoryPlacement:{self._usm_memory_placement} operationCount:{self._operation_count} "
+            f"minSize:{self._min_size} maxSize:{self._max_size} sizeDistribution:{self._size_distribution}"
+        )
+
+    def display_name(self) -> str:
+        return (
+            f"{self._runtime.value.upper()} UsmRandomMemoryAllocation, "
+            f"usmMemoryPlacement {self._usm_memory_placement}, operationCount {self._operation_count}, "
+            f"minSize {self._min_size}, maxSize {self._max_size}, sizeDistribution {self._size_distribution}"
+        )
+
+    def explicit_group(self):
+        return f"UsmRandomMemoryAllocation"
+
+    def description(self) -> str:
+        return (
+            f"Measures memory allocation overhead by performing a randomized mix of "
+            f"usm {self._usm_memory_placement} memory alloc and free operations, with "
+            f"allocation sizes drawn from a {self._size_distribution} distribution between "
+            f"{self._min_size} and {self._max_size} bytes. "
+            f"Starts with {self._operation_count} live allocations. "
+        )
+
+    def get_tags(self):
+        return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
+
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        return _usm_alloc_supported_runtimes()
+
+    def _extra_env_vars(self) -> dict:
+        return _usm_alloc_extra_env_vars(self._runtime)
+
+    def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
+        iters = self._get_iters(flamegraph_enabled)
+        return [
+            f"--iterations={iters}",
+            f"--type={self._usm_memory_placement}",
+            f"--operationCount={self._operation_count}",
+            f"--minSize={self._min_size}",
+            f"--maxSize={self._max_size}",
+            f"--sizeDistribution={self._size_distribution}",
         ]
 
 

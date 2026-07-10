@@ -66,6 +66,12 @@ class Options:
     # Backend name (e.g. level_zero/cuda/amdgpu/host) exported as
     # FORCE_OFFLOAD_PLUGIN for the benchmark executable process.
     force_offload_plugin: str = None
+    # When True, the USM allocation benchmarks export UR_L0_DISABLE_USM_ALLOCATOR=1
+    # for the UR runtime, so its L0 USM pooling allocator is bypassed. This keeps
+    # the UR<->OL comparison apples-to-apples, leaving most of the delta in
+    # liboffload's allocation bookkeeping overhead. Opt in via
+    # --ur-l0-disable-usm-allocator.
+    ur_l0_disable_usm_allocator: bool = False
     benchmark_cwd: str = "INVALID"
     timeout: float = 600
     iterations: int = 3
