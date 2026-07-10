@@ -572,6 +572,16 @@ if __name__ == "__main__":
         default=options.ur_l0_disable_usm_allocator,
     )
     parser.add_argument(
+        "--ol-disable-memory-pool",
+        help="Export LIBOMPTARGET_LEVEL_ZERO_MEMORY_POOL=0 for the OL runtime in "
+        "the USM allocation benchmarks, disabling liboffload's L0 memory pool. "
+        "Combined with --ur-l0-disable-usm-allocator this leaves both runtimes "
+        "unpooled so the UR<->OL comparison stays apples-to-apples. Disabled by "
+        "default.",
+        action=argparse.BooleanOptionalAction,
+        default=options.ol_disable_memory_pool,
+    )
+    parser.add_argument(
         "--env",
         type=str,
         help="Use env variable for a benchmark run.",
@@ -837,6 +847,7 @@ if __name__ == "__main__":
     options.offload_include_dir = args.offload_include_dir
     options.force_offload_plugin = args.force_offload_plugin
     options.ur_l0_disable_usm_allocator = args.ur_l0_disable_usm_allocator
+    options.ol_disable_memory_pool = args.ol_disable_memory_pool
     options.sycl = args.sycl
     options.iterations = args.iterations
     options.timeout = args.timeout

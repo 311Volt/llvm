@@ -50,9 +50,14 @@ def _usm_alloc_extra_env_vars(runtime: RUNTIMES) -> dict:
     L0 USM pooling allocator so that most of the delta between UR and OL stays
     in liboffload's allocation bookkeeping overhead, which is what we want to
     measure. Controlled by --ur-l0-disable-usm-allocator (on by default).
+
+    Symmetrically, the OL runtime can disable liboffload's L0 memory pool via
+    --ol-disable-memory-pool so both runtimes run unpooled.
     """
     if runtime == RUNTIMES.UR and options.ur_l0_disable_usm_allocator:
         return {"UR_L0_DISABLE_USM_ALLOCATOR": "1"}
+    if runtime == RUNTIMES.OL and options.ol_disable_memory_pool:
+        return {"LIBOMPTARGET_LEVEL_ZERO_MEMORY_POOL": "0"}
     return {}
 
 

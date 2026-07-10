@@ -72,6 +72,13 @@ class Options:
     # liboffload's allocation bookkeeping overhead. Opt in via
     # --ur-l0-disable-usm-allocator.
     ur_l0_disable_usm_allocator: bool = False
+    # When True, the USM allocation benchmarks export
+    # LIBOMPTARGET_LEVEL_ZERO_MEMORY_POOL=0 for the OL runtime, so liboffload's
+    # L0 memory pool is disabled. Combined with --ur-l0-disable-usm-allocator
+    # this leaves both runtimes unpooled, isolating the raw allocation
+    # bookkeeping overhead in the UR<->OL comparison. Opt in via
+    # --ol-disable-memory-pool.
+    ol_disable_memory_pool: bool = False
     benchmark_cwd: str = "INVALID"
     timeout: float = 600
     iterations: int = 3
