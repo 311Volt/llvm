@@ -753,6 +753,10 @@ class ComputeBench(Suite):
                 UsmRandomMemoryAllocation(
                     self, runtime, "Device", 128, 1024, 1024 * 1024, "Uniform"
                 ),
+                UsmMemcpyBlocking(self, runtime, "Host", "Device", 4 * 1024, 1),
+                UsmMemcpyBlocking(self, runtime, "Host", "Device", 4 * 1024, 0),
+                UsmMemcpyBlocking(self, runtime, "Device", "Host", 4 * 1024, 1),
+                UsmMemcpyBlocking(self, runtime, "Device", "Host", 4 * 1024, 0),
             ]
 
         benches += [
@@ -1722,6 +1726,66 @@ class UsmRandomMemoryAllocation(ComputeBenchmark):
             f"--minSize={self._min_size}",
             f"--maxSize={self._max_size}",
             f"--sizeDistribution={self._size_distribution}",
+        ]
+
+
+class UsmMemcpyBlocking(ComputeBenchmark):
+    def __init__(self, bench, runtime: RUNTIMES, source, destination, size, blocking):
+        self._source = source
+        self._destination = destination
+        self._size = size
+        self._blocking = blocking
+        # iterations per bin_args: --iterations=10000
+        self._iterations_regular = 10000
+        self._iterations_trace = 10
+        super().__init__(
+            bench,
+            f"api_overhead_benchmark_{runtime.value}",
+            "UsmMemcpyBlocking",
+            runtime,
+        )
+
+    def name(self):
+        return (
+            f"api_overhead_benchmark_{self._runtime.value} UsmMemcpyBlocking "
+            f"src:{self._source} dst:{self._destination} size:{self._size} blocking:{self._blocking}"
+        )
+
+    def display_name(self) -> str:
+        return (
+            f"{self._runtime.value.upper()} UsmMemcpyBlocking, "
+            f"src {self._source}, dst {self._destination}, size {self._size}, blocking {self._blocking}"
+        )
+
+    def explicit_group(self):
+        return f"UsmMemcpyBlocking"
+
+    def description(self) -> str:
+        mode = "blocking (synchronous)" if self._blocking else "asynchronous submit"
+        return (
+            f"Measures the CPU cost of a {mode} USM memcpy of {self._size} bytes from "
+            f"{self._source} to {self._destination} memory. In blocking mode the measured "
+            f"region includes waiting for the copy to complete; in async mode only the "
+            f"submit call is measured. "
+        )
+
+    def get_tags(self):
+        return [runtime_to_tag_name(self._runtime), "micro", "latency", "memory"]
+
+    def _supported_runtimes(self) -> list[RUNTIMES]:
+        return _usm_alloc_supported_runtimes()
+
+    def _extra_env_vars(self) -> dict:
+        return _usm_alloc_extra_env_vars(self._runtime)
+
+    def _bin_args(self, flamegraph_enabled: bool = False) -> list[str]:
+        iters = self._get_iters(flamegraph_enabled)
+        return [
+            f"--iterations={iters}",
+            f"--src={self._source}",
+            f"--dst={self._destination}",
+            f"--size={self._size}",
+            f"--blocking={self._blocking}",
         ]
 
 
